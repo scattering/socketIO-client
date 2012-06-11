@@ -31,6 +31,6 @@ Usage
     source $ENV/bin/activate
     python
 
-        from socketIO import SocketIO
+        from sioclient import SocketIO
         s = SocketIO('localhost', 8000)
         s.emit('news', {'hello': 'world'})
