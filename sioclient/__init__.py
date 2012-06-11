@@ -1,6 +1,6 @@
-from simplejson import dumps
+import json
 from threading import Thread, Event
-from urllib import urlopen
+from urllib import urlopen, urlencode
 from websocket import create_connection
 
 
@@ -38,11 +38,47 @@ class SocketIO(object):
             pass
 
     def __send_heartbeat(self):
-        self.connection.send('2::')
+        self.connection.send('2')
 
-    def emit(self, eventName, eventData):
-        self.connection.send('5:::' + dumps(dict(name=eventName, args=eventData)))
+    def emit(self, eventName, *args, **kw):
+        """
+        Signal an event
+        """
+        channel = kw.pop("channel","")
+        id = kw.pop("id","")
+        if kw:
+            raise TypeError("Unknown keyword(s) "+", ".join(kw.keys()))
+        msg = json.dumps(dict(name=eventName, args=args))
+        #print "sending",msg
+        self.connection.send(':'.join(('5',id,channel,msg)))
 
+    def disconnect(self, channel=None):
+        self.connection.send('0::'+channel if channel else '0::')
+        if not channel: 
+            self.heartbeatThread.cancel()
+            self.connection.close()
+    def connect(self, channel, query=None):
+        self.connection.send('1::'+channel+('?'+urlencode(query) if query else ""))
+        return Channel(self, channel)
+    def send(self, msg, id="", channel=None):
+        if isinstance(msg, basestring):
+            code = '3'
+            data = msg
+        else:
+            code = '4'
+            data = json.dumps(msg)
+        self.connection.send(':'.join((code,id,channel,data)))
+
+class Channel(object):
+    def __init__(self, socket, channel):
+        self.socket = socket
+        self.channel = channel
+    def disconnect(self):
+        self.socket.disconnect(channel=self.channel)
+    def emit(self, eventName, *args, **kw):
+        self.socket.emit(eventName, *args, channel=self.channel)
+    def send(self, msg):
+        self.socket.send(msg, channel=self.channel)
 
 class SocketIOError(Exception):
     pass
