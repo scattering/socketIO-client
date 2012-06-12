@@ -67,6 +67,9 @@ class Handler(object):
         """
         print "ack",msgid
 
+DEFAULT_HANDLER = Handler()
+PROTOCOL = 1
+
 class SocketIO(object):
     """
     SocketIO client connection.
@@ -85,13 +88,15 @@ class SocketIO(object):
 
     def handler(self, channel):
         if channel:
-            return self.channels[channel].handler
+            handler = self.channels[channel].handler
         else:
-            return self.main_handler
+            handler = self.main_handler
+        if handler is None:
+            return DEFAULT_HANDLER
 
     def __do_handshake(self):
         try:
-            response = urlopen('http://%s:%d/socket.io/1/' % (self.host, self.port))
+            response = urlopen('http://%s:%d/socket.io/%s/' % (self.host, self.port,PROTOCOL))
         except IOError:
             raise SocketIOError('Could not start connection')
         if 200 != response.getcode():
@@ -103,7 +108,7 @@ class SocketIO(object):
             raise SocketIOError('Could not parse handshake')
 
     def __connect(self):
-        self.connection = create_connection('ws://%s:%d/socket.io/1/websocket/%s' % (self.host, self.port, self.sessionID))
+        self.connection = create_connection('ws://%s:%d/socket.io/%s/websocket/%s' % (self.host, self.port, PROTOCOL, self.sessionID))
 
     def __del__(self):
         try:
@@ -113,7 +118,7 @@ class SocketIO(object):
             pass
 
     def __send_heartbeat(self):
-        self.connection.send('2')
+        self.connection.send('2::')
 
     def emit(self, eventName, *args, **kw):
         """
@@ -128,14 +133,14 @@ class SocketIO(object):
             raise TypeError("Unknown keyword(s) "+", ".join(kw.keys()))
         msg = json.dumps(dict(name=eventName, args=args))
         #print "sending",msg
-        self.connection.send(':'.join(('5',msgid,channel,msg)))
+        self.connection.send(':'.join(('5',str(msgid),channel,msg)))
 
     def disconnect(self, channel=None):
         """
         Close the socket, or close an individual channel to the socket if
         channel is specified.
         """
-        self.connection.send('0::'+channel if channel else '0')
+        self.connection.send('0::'+channel if channel else '0::')
         if channel:
             del self.channels[channel]
         if not channel: 
@@ -154,7 +159,7 @@ class SocketIO(object):
         self.channels[channel] = Channel(self, channel, handler)
         return self.channels[channel]
 
-    def send(self, msg, msgid="", channel=None):
+    def send(self, msg, msgid="", channel=""):
         """
         Send a messge to the socketIO server.
         """
@@ -211,6 +216,7 @@ class ListenerThread(Thread):
         """Run the listener thread"""
         while not self.done.is_set():
             msg = self.socket.connection.recv()
+            #print msg
             if msg is None: break
             split_data = msg.split(":",3)
             if len(split_data) == 4:
