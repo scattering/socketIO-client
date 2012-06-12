@@ -1,6 +1,6 @@
 socketIO.client
 ===============
-Here is a barebones `socket.io <http://socket.io>`_ client library for Python.
+Here is a `socket.io <http://socket.io>`_ client library for Python.
 
 Thanks to `rod <http://stackoverflow.com/users/370115/rod>`_ for his `StackOverflow question and answer <http://stackoverflow.com/questions/6692908/formatting-messages-to-send-to-socket-io-node-js-server-from-python-client/>`_, on which this code is based.
 
@@ -84,14 +84,22 @@ the following is called instead::
 
     unknown_event(self, name, args)
 
+Instead of using a handler class, you can instead add handlers directly
+to the socket.  For example::
+
+    socket.on('msg_to_room', 
+              lambda who,what: who!='bot' or socket.emit('message', 'hi!'))
+
+This isn't quite as handy as the javascript equivalent since lambdas in
+python can only operate on a single expression.
+
 Channels
 --------
 
-Channel support is coded but not tested.
-
-To open a channel, start with an open socket and connect to the specific channel.
-For example, if you have handlers for main socket as well as a chat service and
-a key storing service, you can get the individual channel connections as follows::
+To open a channel, start with an open socket and connect to the specific 
+channel.  For example, if you have handlers for main socket as well as a 
+chat service and a key storing service, you can get the individual channel 
+connections as follows::
 
     socket = sioclient.socketIO(server, port, MainHandler())
     chat = socket.connect("/chat", ChatHandler())
@@ -108,18 +116,7 @@ Only one connection per channel is allowed for a socket.
 RPC
 ---
 
-Remote procedure calls are only weakly supported.  To do so, you need to override 
-the "ack" call in the handler::
+If the last argument to an "emit" message is a callback, then the callback
+will be called when the server replies.  The server will send a list of
+arguments to supply to the callback.
 
-    ack(self, msgid, name=None, args=None)
-
-The msgid for the ack should match the msgid=value keyword on the corresponding
-send/emit call.  For now you will have to keep track of what to do when the
-acknowledgement arrives.  The optional parameters name+args indicate the event 
-that should be triggered as part of the acknowledgement.
-
-A better interface would supply a callback on the send/emit call which supplies
-its own unique message id and holds onto the callback until the acknowledgement
-arrives.  That way, you don't have to see either message ids or acks.  Please
-update the interface to do this when you have a socket.IO server that implements 
-RPC semantics.

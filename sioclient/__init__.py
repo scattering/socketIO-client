@@ -45,7 +45,7 @@ class Handler(object):
         """
         print "error %s:"%name,msg
 
-    def on_message(self, msg):
+    def on_message(self, msgid, msg):
         """
         Called when a message is received.  JSON messages will already
         be decoded when this is called.  Event signals will not signal
@@ -62,14 +62,6 @@ class Handler(object):
         """
         print "unknown event %s(%s)"%(name,", ".join("%r"%s for s in args))
 
-    def ack(self, msgid, event=None, args=[]):
-        """
-        Server sent an acknowledgement to message.  Ideally we should
-        never see this since the acknowledgement should trigger the
-        callback for a sent message, but that code hasn't been written yet.
-        """
-        print "ack",msgid
-
 DEFAULT_HANDLER = Handler()
 PROTOCOL = 1
 
@@ -82,13 +74,15 @@ class SocketIO(object):
         self.port = int(port)
         self.__do_handshake()
         self.__connect()
-        self.heartbeatThread = RhythmicThread(self.heartbeatTimeout - 2, self.__send_heartbeat)
+        self.heartbeatThread = RhythmicThread(self.heartbeatTimeout - 2, 
+                                              self.__send_heartbeat)
         self.heartbeatThread.start()
         self.handler = handler
         self.special_handlers = {}
         self.channels = {}
         self.listenerThread = ListenerThread(self)
         self.listenerThread.start()
+        self.msgid = 0
 
     def on(self, event, callback):
         self.special_handlers[event] = callback
@@ -98,8 +92,9 @@ class SocketIO(object):
             source = self.channels[channel]
         else:
             source = self
-        if event in self.special_handlers:
-            return self.special_handlers[event]
+
+        if event in source.special_handlers:
+            return source.special_handlers[event]
 
         if source.handler is None:
             handler = DEFAULT_HANDLER
@@ -138,21 +133,6 @@ class SocketIO(object):
     def __send_heartbeat(self):
         self.connection.send('2::')
 
-    def emit(self, eventName, *args, **kw):
-        """
-        Signal an event on the server.
-
-        If channel keyword is specified, the event will be emitted on a
-        particular channel.
-        """
-        channel = kw.pop("channel","")
-        msgid = kw.pop("msgid","")
-        if kw:
-            raise TypeError("Unknown keyword(s) "+", ".join(kw.keys()))
-        msg = json.dumps(dict(name=eventName, args=args))
-        #print "sending",msg
-        self.connection.send(':'.join(('5',str(msgid),channel,msg)))
-
     def disconnect(self, channel=None):
         """
         Close the socket, or close an individual channel to the socket if
@@ -177,29 +157,54 @@ class SocketIO(object):
         self.channels[channel] = Channel(self, channel, handler)
         return self.channels[channel]
 
-    def send(self, msg, msgid="", channel=""):
+    def emit(self, event, *args):
+        """
+        Signal an event on the server.
+        """
+        self._emit(event, args, '')
+    def _emit(self, event, args, channel):
+        msgid = ''
+        if len(args) > 1 and callable(args[-1]):
+            args, callback = args[:-1], args[-1]
+            self.msgid += 1
+            msgid = str(self.msgid)+"+"
+            self.listenerThread.callbacks[msgid] = callback
+         
+        msg = json.dumps(dict(name=event, args=args))
+        #print "sending",msg
+        self.connection.send(':'.join(('5',msgid,channel,msg)))
+
+    def send(self, msg, callback=None):
         """
         Send a messge to the socketIO server.
         """
+        self._send(msg, '', callback)
+
+    def _send(self, msg, channel, callback):
         if isinstance(msg, basestring):
             code = '3'
             data = msg
         else:
             code = '4'
             data = json.dumps(msg)
+        msgid = ''
+        if callback is not None:
+            self.msgid += 1
+            msgid = str(self.msgid)+'+'
+            self.listenerThread.callbacks[msgid] = callback
         self.connection.send(':'.join((code,msgid,channel,data)))
 
     def wait(self):
         """
         Wait for the event handler to terminate.
         """
+        self.listenerThread.wait()
         self.listenerThread.join()
 
 class Channel(object):
     """
-    Connection for sending messges to the socketIO server on a particular channel.
-
-    Note: does not yet support channel specific handlers.
+    socket.IO channel connection.  The methods are similar to the methods
+    in the main socket, but they only operate on a single channel.
     """
     def __init__(self, socket, channel, handler):
         self.socket = socket
@@ -208,10 +213,10 @@ class Channel(object):
         self.special_handlers = {}
     def disconnect(self):
         self.socket.disconnect(channel=self.channel)
-    def emit(self, eventName, *args, **kw):
-        self.socket.emit(eventName, *args, channel=self.channel)
-    def send(self, msg):
-        self.socket.send(msg, channel=self.channel)
+    def emit(self, event, *args):
+        self.socket._emit(event, args, channel=self.channel)
+    def send(self, msg, callback=None):
+        self.socket._send(msg, channel=self.channel, callback=callback)
     def on(self, event, callback):
         self.special_handlers[event] = callback
 
@@ -228,16 +233,23 @@ class ListenerThread(Thread):
         super(ListenerThread,self).__init__()
         self.done = Event()
         self.socket = socket
+        self.callbacks = {}
+        self.waiting = False
 
     def cancel(self):
         """Cancel the listener thread"""
         self.done.set()
 
+    def wait(self):
+        if len(self.callbacks) == 0:
+            self.done.set()
+        self.waiting = True
+
     def run(self):
         """Run the listener thread"""
         while not self.done.is_set():
             msg = self.socket.connection.recv()
-            #print msg
+            #print "recv",msg
             if msg is None: break
             split_data = msg.split(":",3)
             if len(split_data) == 4:
@@ -290,21 +302,27 @@ class ListenerThread(Thread):
 
     def recv(self, msgid, channel, data):
         """Receive a message or a json message"""
+        #print "recv",msgid, channel, data
         handler = self.socket.get_handler(channel, 'message')
-        handler(msgid, data)
+        handler(data)
 
     def ack(self, data):
         """Receive acknowledgement for an event"""
-        handler = self.socket.get_handler(channel, 'ack')
-        plus_idx = data.find('+')
-        if plus_idx > 0:
-            msgid, event = data[:plus_idx],json.loads(data[plus_idx+1:])
-            name = 'on_'+event['name'].replace(' ','_')
-            args = event['args']
-            handler(msgid, name, args)
+        parts = data.split('+',1)
+        msgid = parts[0]+'+'
+        args = json.loads(parts[1]) if len(parts)>1 else []
+        callback = self.callbacks.get(msgid, None)
+        if callback is None:
+            handler = self.socket.get_handler('', 'error')
+            handler('callback missing',
+                    'could not find callback for message %r'%msgid)
         else:
-            handler(msgid)
+            del self.callbacks[msgid]
+            callback(*args)
 
+            # allow termination when all results are in
+            if self.waiting and len(self.callbacks) == 0:
+                self.cancel()
     
 class RhythmicThread(Thread):
     'Execute function every few seconds'
