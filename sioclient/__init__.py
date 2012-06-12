@@ -13,6 +13,9 @@ class Handler(object):
 
     The event handler is run in a listener thread.
     """
+    def on(self, message, callback):
+        setattr(self, "on_"+message.replace(" ","_"), callback)
+
     # Standard messages
     def on_connect(self, socket):
         """
@@ -50,14 +53,14 @@ class Handler(object):
         """
         print "unhandled message",msg
 
-    def unknown_event(self, name, args):
+    def unknown_event(self, name, *args):
         """
         Called when there is no handler for a particular event.
 
         The event name will already be converted to on_name, with spaces
         in name converted to underscores.
         """
-        print "unknown event",name,args
+        print "unknown event %s(%s)"%(name,", ".join("%r"%s for s in args))
 
     def ack(self, msgid, event=None, args=[]):
         """
@@ -81,19 +84,34 @@ class SocketIO(object):
         self.__connect()
         self.heartbeatThread = RhythmicThread(self.heartbeatTimeout - 2, self.__send_heartbeat)
         self.heartbeatThread.start()
-        self.main_handler = handler
+        self.handler = handler
+        self.special_handlers = {}
         self.channels = {}
         self.listenerThread = ListenerThread(self)
         self.listenerThread.start()
 
-    def handler(self, channel):
-        if channel:
-            handler = self.channels[channel].handler
-        else:
-            handler = self.main_handler
-        if handler is None:
-            return DEFAULT_HANDLER
+    def on(self, event, callback):
+        self.special_handlers[event] = callback
 
+    def get_handler(self, channel, event):
+        if channel:
+            source = self.channels[channel]
+        else:
+            source = self
+        if event in self.special_handlers:
+            return self.special_handlers[event]
+
+        if source.handler is None:
+            handler = DEFAULT_HANDLER
+        else:
+            handler = source.handler
+
+        name = 'on_'+event.replace(' ','_')
+        if hasattr(handler, name):
+            return getattr(handler, name)
+        else:
+            return lambda *args: handler.unknown_event(name, *args)
+    
     def __do_handshake(self):
         try:
             response = urlopen('http://%s:%d/socket.io/%s/' % (self.host, self.port,PROTOCOL))
@@ -187,12 +205,15 @@ class Channel(object):
         self.socket = socket
         self.channel = channel
         self.handler = handler
+        self.special_handlers = {}
     def disconnect(self):
         self.socket.disconnect(channel=self.channel)
     def emit(self, eventName, *args, **kw):
         self.socket.emit(eventName, *args, channel=self.channel)
     def send(self, msg):
         self.socket.send(msg, channel=self.channel)
+    def on(self, event, callback):
+        self.special_handlers[event] = callback
 
 class SocketIOError(Exception):
     pass
@@ -248,50 +269,41 @@ class ListenerThread(Thread):
     def error(self, channel, message):
         """Notify handler that an error occurred"""
         reason,advice = message.split('+',1)
-        handler = self.socket.handler(channel)
-        handler.on_error(reason, advice)
+        handler = self.socket.get_handler(channel,'error')
+        handler(reason, advice)
 
     def connect(self, channel):
         """Notify handler that the connection is available"""
-        handler = self.socket.handler(channel)
-        handler.on_connect(self.socket)
+        handler = self.socket.get_handler(channel, 'connect')
+        handler(self.socket)
 
     def disconnect(self, channel):
         """Notify hander that the connection has terminated"""
-        handler = self.socket.handler(channel)
-        handler.on_disconnect()
+        handler = self.socket.get_handler(channel, 'disconnect')
+        handler()
 
     def event(self, msgid, channel, data):
         """Signal an event in the handler"""
-        if msgid or channel:
-            raise NotImplementedError("not yet supporting message ids and channels")
-            # proper implementation should have callbacks associated with messages,
-            # so that when the particular message is is returned, then the specific
-            # callback is called.  We aren't there yet.
         event = json.loads(data)
-        name = 'on_'+event['name'].replace(' ','_')
-        #print "event",event
-        handler = self.socket.handler(channel)
-        if hasattr(handler, name):
-            getattr(handler, name)(*event['args'])
-        else:
-            handler.unknown_event(name, event['args'])
+        handler = self.socket.get_handler(channel, event['name'])
+        handler(*event['args'])
 
     def recv(self, msgid, channel, data):
         """Receive a message or a json message"""
-        handler = self.socket.handler(channel)
-        handler.on_message(msgid, data)
+        handler = self.socket.get_handler(channel, 'message')
+        handler(msgid, data)
 
     def ack(self, data):
         """Receive acknowledgement for an event"""
+        handler = self.socket.get_handler(channel, 'ack')
         plus_idx = data.find('+')
         if plus_idx > 0:
             msgid, event = data[:plus_idx],json.loads(data[plus_idx+1:])
             name = 'on_'+event['name'].replace(' ','_')
             args = event['args']
-            self.socket.handler.ack(msgid, name, args)
+            handler(msgid, name, args)
         else:
-            self.socket.handler.ack(msgid)
+            handler(msgid)
 
     
 class RhythmicThread(Thread):
