@@ -1,5 +1,5 @@
-[PAK, Aug 2012] Added channel support.  These changes have been pulled back into the original package
-`https://github.com/invisibleroads/socketIO-client`_  This fork will not be maintained.
+[PAK, Aug 2012] Added channel support.  These changes have been pulled back into the original package by
+`invisibleroads <https://github.com/invisibleroads/socketIO-client>`_  This fork will not be maintained.
 
 socketIO.client
 ===============
